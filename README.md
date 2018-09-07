@@ -1,4 +1,5 @@
-#Sudoku
+
+# Sudoku
 
 A simple program to solve 9x9 Sudoku grids.
 Algorithm used: Backtracking using arc-consistency
