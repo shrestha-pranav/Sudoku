@@ -3,120 +3,185 @@
 
 """
 A simple program to solve 9x9 Sudoku grids.
-Algorithm used: Backtracking
+Algorithm used: Backtracking using arc-consistency
 
 Systematically checks through every possible combination, and "backtracks"
-once it finds an "invalid" configuration. 
+once it finds an "invalid" configuration. The next cell is chosen using a
+minimum value heuristic.
 
-- Starts from first cell, and traverses through columns then rows. 
-- If the cell if filled, continue on to next empty cell.
-- If cell is not filled(0):
-    - Try out first value(1)
-    - If valid, check the next cell
-    - If invalid, try the next value(2)
-    - If every value(1-9) is invalid, consider the previous cell invalid.
+- The cell with the least number of possibilities is first chosen.
+- Each possibility is tried out iteratively until correct solution is found.
+- Each time a possibility is tried
+    - The value is removed from all of the cell's neighbors.
+    - If any of the removal causes another value to be set, the process is repeated recursively.
+- The next cell is then chosen in the same method until the board has been solved.
 
 @author: Pranav Shrestha
 """
 
+import sys
+from time import time
+import numpy as np
 
-class Sudoku(object):
+start = time()
 
-    def __init__(self, sudokuGrid):
-        """
-        Initializes a sudokuGrid using either an array or string
-        """
-        if type(sudokuGrid) == list:
-            #Basic comparison to check for 9x9 array
-            if(len(sudokuGrid)==9 and len(sudokuGrid[0]==9)):
-                self.grid = sudokuGrid[:]
-        elif type(sudokuGrid) == str:
-            self.grid = [[int(sudokuGrid[i * 9 + j]) for j in range(9)]
-                         for i in range(9)]        
-        else:
-            raise TypeError('Grid provided was not string or array')
+# List of global variables for execution
+out_filename = 'output.txt'
+src_filename = 'sudoku_grids.txt'
 
-    def printGrid(self):
-        """
-        Prints the Sudoku Grid using formatting methods
-        """
-        print ('/' + '-' * 23 + '\\')
-        for (i, row) in enumerate(self.grid):
-            print (('|' + ' {} {} {} |' * 3).format(*[x if x != 0 else ' ' 
-                for x in row]))
-            if i == 8:
-                print ('\\' + '-' * 23 + '/')
-            elif i % 3 == 2:
-                print ('|' + '-' * 23 + '|')
+# Generate a dictionary of each cell's neighbors [20 each]
+neighbors = {
+    i : set(
+        range(i/9*9, i/9*9 + 9) +               # Generate row neighbors
+        range(i%9, 81, 9) +                     # Generate column neighbors
+        [9*(i/27*3 + k/3) + i%9/3*3 + k%3 for k in range(9)] # 3x3 neighbors
+    ).difference(set([i])) # Remove this cell
+    
+    for i in range(81)}
 
-    def nextCell(self, row, column):
-        """
-        Returns the co-ordinates of the next empty cell.
-        Returns -1, -1 if there is no empty cell after (row, column)
-        """
-        for j in range(column, 9):
-            if self.grid[row][j] == 0:
-                return row, j
+# Helper dicitonaries to improve runtime efficiency
+# Mapping of each 9-bit int to a set of digits 001101101->(1,3,4,6,7)
+hasher = {i:set([j+1 for j in range(9) if (i>>j)%2]) for i in range(512)}
+lenmap = {i:len(hasher[i]) for i in range(512)}
 
-        for i in range(row + 1, 9):
-            for j in range(0, 9):
-                if self.grid[i][j] == 0:
-                    return i, j
-        return -1, -1
+encodr = {1<<i: i+1 for i in range(9)}       # reverse mapping of decodr
+decodr = {i+1:1<<i for i in range(9)}        # maps 1->000000001, 2->000000010
+removr = {1<<i:511-(1<<i) for i in range(9)} # maps 1->111111110, 2->111111101
 
-    def isValid(self, row, column, checkValue):
-        """
-        Checks if the checkValue is valid for (row,column)
-        """
-        
-        #Checking for duplicate in row and column
-        for i in range(9):
-            if checkValue == self.grid[row][i] \
-                or checkValue == self.grid[i][column]:
+def remove(grid, n, val):
+    ''' Recursively remove value v from all neighbors of cell n in grid '''
+
+    for i in neighbors[n]:
+        # For all cells that have not been set, i.e. |D|>1
+        if lenmap[grid[i]] > 1:
+
+            # Remove v from domain using bit-manipulation
+            grid[i] &= removr[val]
+
+            # IMPOSSIBLE case since the cell had |D| > 1 before removal
+            if lenmap[grid[i]]==0: return False
+            
+            # If a cell becomes "set", recurse remove()
+            elif lenmap[grid[i]]==1:
+                if remove(grid, i, grid[i]) is False: return False
+
+        # If cell is set but not the same value, there is conflict
+        elif grid[i] == val: return False
+
+    # No conflict on removal. Helps in forward-checking
+    return True
+
+def backtrack(grid):
+    '''
+        Runs backtracking algorithm.
+        Minimum value heuristic: Chooses cell with least branches
+    '''
+
+    # Compute the cell with least branching
+    mincel = -1  # Minimum cell (argmin)
+    minlen = 10  # Minimum length heuristic (min)
+
+    for i in range(81):
+        tmp = lenmap[grid[i]]
+        if tmp == 1: continue
+        if tmp == 2: mincel = i; break
+        if tmp < minlen: minlen, mincel = tmp, i
+    
+    # Base Case: Everything has already been set
+    if mincel < 0: return grid
+    
+    # For each value in the chosen cell's domain
+    for val in hasher[grid[mincel]]:
+
+        # Clone the grid to deal with backtracking overwrites
+        tmpgrd = grid[:]
+
+        # Update the value of the chosen cell
+        tmpgrd[mincel] = decodr[val]
+        if remove(tmpgrd, mincel, decodr[val]):
+
+            # Backtracking with the new value and check if result is found
+            result = backtrack(tmpgrd)
+            if result is not False: return result
+    
+    # None of the values in the cell's domain matches. Backtrack up.
+    return False
+
+def solveGrid(grid):
+    ''' Convert a string grid into an int[81] list and run backtracking '''
+
+    # Convert to int[81] with 511 = 111111111 = {1,2,3,4,5,6,7,8,9} mapping
+    g = [511 if i=='0' else decodr[int(i)] for i in grid]
+
+    # For each set value (|D|=1), run arc consistency on the node
+    for i in range(81):
+        if lenmap[g[i]]==1:
+            if not remove(g, i, g[i]):
+                print "Unsolvable"
                 return False
 
-        #Checking for duplicate in 3x3 subgrid
-        subgridX, subgridY = 3 * int(row / 3), 3 * int(column / 3)
-        for i in range(subgridX, subgridX + 3):
-            for j in range(subgridY, subgridY + 3):
-                if checkValue == self.grid[i][j]:
-                    return False
+    # Solve the grid using backtracking, if possible
+    solved = backtrack(g)
 
-        return True
+    # Return False for UNSOLVABLE or a string concatenation of the grid
+    if solved is False: return False
+    else: return "".join([str(encodr[i]) for i in solved])
 
-    def solveGrid(self, row=0, column=0):
-        """
-        Implementation of the backtracking algorithm
-        """
-        
-        #Find next empty cell in the Sudoku grid
-        row, column = self.nextCell(row, column)
-        
-        #If there are no empty cells found
-        if row == -1:
-            return True
-        
-        #Check every value (1-9) in the selected cell
-        for checkValue in range(1, 10):
-            #If value is valid, check the next cell
-            if self.isValid(row, column, checkValue):
-                self.grid[row][column] = checkValue
-                if self.solveGrid(row, column):
-                    return True
-                #Return grid to initial state if value isn't correct
-                self.grid[row][column] = 0
 
-        #If no value is valid, return false
-        return False
+def pf_util(i):
+    ''' Helper function for printing strings pf = printer function '''
+    if lenmap[i]==1: return ' '*4+str(encodr[i])+' '*4
+    return ''.join([str(k) if k in hasher[i] else ' ' for k in range(1,10)])
 
+def print_grid(g):
+    ''' Prints the grid including possibilities in a very specific format '''
+    for i in range(81):
+        if i%27==0: print '-'*108
+        print '|'+pf_util(g[i])+'|',
+        if i%9==8: print
+    print '-'*108
+
+def write_solved(board, f_name=out_filename, mode='w+'):
+    ''' Write solved board to desired file, overwriting by default. '''
+
+    outfile = open(f_name, mode)
+    outfile.write(board)
+    outfile.write('\n')
+    outfile.close()
 
 if __name__ == '__main__':
-    """
-    Simple test class with preset grid
-    """
-    s = "0030206009003050010018064000081029007000"\
-    "00008006708200002609500800203009005010300"
-    sudoku_grid = Sudoku(s)
-    sudoku_grid.printGrid()
-    sudoku_grid.solveGrid()
-    sudoku_grid.printGrid()
+    if len(sys.argv) > 1:  # Run a single board, as done during grading
+        board = solveGrid(sys.argv[1].strip())
+        write_solved(board)
+
+    else:
+        print "Running all from sudokus_start"
+
+        #  Read boards from source.
+        try:
+            srcfile = open(src_filename, "r")
+            sudoku_list = srcfile.read()
+        except:
+            print "Error reading the sudoku file %s" % src_filename
+            exit()
+
+        times = []
+        # Solve each board using backtracking
+        for line in sudoku_list.split("\n"):
+            if len(line) < 9: continue
+
+            # Solve the board str->str
+            start = time()
+            board = solveGrid(line.strip())
+            times.append(time()-start)
+
+            # Append solved board to output.txt
+            write_solved(board, mode='a+')
+        times = np.array(times)
+
+        print "Min time: %.2e" % times.min()
+        print "Max time: %.2e" % times.max()
+        print "Avg time: %.2e ± %.2e\n" % (times.mean(), times.std())
+
+        print "Finished %d board(s) in file in %.2e seconds." % (
+                                    len(times), times.sum())
